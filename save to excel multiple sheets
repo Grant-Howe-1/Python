@@ -1,0 +1,3 @@
+with pd.ExcelWriter("CM_SCM_Cost_Percentages.xlsx") as writer:
+    export1.to_excel(writer, sheet_name="CM", index=False)
+    export2.to_excel(writer, sheet_name="SCM", index=False)
