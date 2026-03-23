@@ -1,0 +1,117 @@
+from flask import Flask, jsonify, request
+from sqlalchemy import create_engine
+from bs4 import BeautifulSoup
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point, Polygon
+
+app = Flask(__name__)
+
+# 🔐 API Key
+API_KEY = "mysecret123"
+
+def require_api_key():
+    return request.headers.get('x-api-key') == API_KEY
+
+# 🔌 Database connection
+server = 'dblistener1'
+database = 'information_centre'
+driver = 'SQL Server'
+connection_string = f'mssql+pyodbc://{server}/{database}?driver={driver}'
+engine = create_engine(connection_string)
+
+
+def breadcrumb_coverage_all(date, site):
+    query = f"""
+    SELECT 
+    gc.GrittingCallOutID,
+    sgc.SiteID, 
+    COALESCE(s.SiteKMLData, s.SiteKMLData2) AS SiteKMLData,
+    lt.TrackingID, 
+    lt.RecordID, 
+    lt.RecordTypeID,
+    lt.BladeID,
+    lt.RecordedDateTime,
+    lt.Latitude,
+    lt.Longitude
+    FROM GC_Gritting_Callout gc 
+    INNER JOIN GC_Site_Gritting_Contract sgc ON sgc.SiteGrittingContractID = gc.SiteGrittingContractID
+    INNER JOIN EP_Site s ON s.SiteID = sgc.SiteID 
+    INNER JOIN Location_Tracking lt ON lt.RecordID = gc.GrittingCallOutID
+    WHERE LEN(COALESCE(s.SiteKMLData, s.SiteKMLData2)) > 0 
+    AND sgc.SiteID = {site}
+    AND gc.CallOutDateTime > {date}
+    """
+
+    with engine.connect() as connection:
+        df = pd.read_sql(query, connection)
+
+    if df.empty:
+        return {"error": "No data found"}
+
+    # 🗺️ Extract polygon
+    site_kml_data = df["SiteKMLData"].iloc[0]
+    raw_coords = BeautifulSoup(site_kml_data, "xml").find("coordinates").get_text(strip=True)
+
+    coords = []
+    for line in raw_coords.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        lon, lat, *_ = line.split(",")
+        coords.append((float(lon), float(lat)))
+
+    if coords[0] != coords[-1]:
+        coords.append(coords[0])
+
+    poly = Polygon(coords)
+
+    geoseries = gpd.GeoSeries([poly], crs="EPSG:4326")
+    poly_projected = geoseries.to_crs(3857)
+    poly_geom = poly_projected.iloc[0]
+    poly_area = poly_projected.area.iloc[0]
+
+    # 📍 Breadcrumb points
+    df = df.drop_duplicates(subset=["Latitude", "Longitude"])
+    geometry = [Point(xy) for xy in zip(df["Longitude"], df["Latitude"])]
+
+    operative_coords = gpd.GeoSeries(geometry, crs=4326).to_crs(3857)
+
+    buffers = operative_coords.buffer(2)
+    clipped_buffers = buffers.intersection(poly_geom)
+
+    breadcrumb_area = clipped_buffers.unary_union.area
+    coverage_percentage = round(100 * breadcrumb_area / poly_area, 2)
+
+    gdf = gpd.GeoDataFrame(geometry=geometry)
+    inside = gdf[gdf.within(poly)]
+
+    breadcrumbs_inside_percentage = round(100 * len(inside) / len(gdf), 2)
+
+    return {
+        "coverage_percentage": coverage_percentage,
+        "breadcrumbs_inside_percentage": breadcrumbs_inside_percentage
+    }
+
+
+# 🌐 API endpoint
+@app.route('/coverage', methods=['GET'])
+def coverage():
+    if not require_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    site = request.args.get('site')
+    date = request.args.get('date')
+
+    if not site or not date:
+        return jsonify({"error": "Missing parameters"}), 400
+
+    try:
+        result = breadcrumb_coverage_all(date, site)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True, use_reloader=False)
