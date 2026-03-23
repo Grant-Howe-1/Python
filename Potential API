@@ -128,7 +128,7 @@ def coverage():
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
 
-
+TO ACCESS ELSEWHERE
 https://your-api/coverage?site=123&date='2024-01-01'
 {
   "x-api-key": "mysecret123"
