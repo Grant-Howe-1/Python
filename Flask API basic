@@ -1,0 +1,30 @@
+from flask import Flask, jsonify, request
+
+app = Flask(__name__)
+
+API_KEY = "mysecret123"  # store securely in real apps
+
+# 🔐 Helper function to check API key
+def require_api_key():
+    key = request.headers.get('x-api-key')
+    if key != API_KEY:
+        return False
+    return True
+
+
+@app.route('/', methods=['GET'])
+def home():
+    if not require_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({'data': 'hello world'})
+
+
+@app.route('/home/<int:num>', methods=['GET'])
+def disp(num):
+    if not require_api_key():
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({'data': num ** 2})
+
+
+if __name__ == '__main__':
+    app.run(debug=True, use_reloader=False)
