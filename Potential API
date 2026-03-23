@@ -20,31 +20,40 @@ driver = 'SQL Server'
 connection_string = f'mssql+pyodbc://{server}/{database}?driver={driver}'
 engine = create_engine(connection_string)
 
-
 def breadcrumb_coverage_all(date, site):
-    query = f"""
-    SELECT 
-    gc.GrittingCallOutID,
-    sgc.SiteID, 
-    COALESCE(s.SiteKMLData, s.SiteKMLData2) AS SiteKMLData,
-    lt.TrackingID, 
-    lt.RecordID, 
-    lt.RecordTypeID,
-    lt.BladeID,
-    lt.RecordedDateTime,
-    lt.Latitude,
-    lt.Longitude
-    FROM GC_Gritting_Callout gc 
-    INNER JOIN GC_Site_Gritting_Contract sgc ON sgc.SiteGrittingContractID = gc.SiteGrittingContractID
-    INNER JOIN EP_Site s ON s.SiteID = sgc.SiteID 
-    INNER JOIN Location_Tracking lt ON lt.RecordID = gc.GrittingCallOutID
-    WHERE LEN(COALESCE(s.SiteKMLData, s.SiteKMLData2)) > 0 
-    AND sgc.SiteID = {site}
-    AND gc.CallOutDateTime > {date}
-    """
-
-    with engine.connect() as connection:
-        df = pd.read_sql(query, connection)
+    query = """
+        SELECT 
+        gc.GrittingCallOutID,
+        sgc.SiteID, 
+        COALESCE(s.SiteKMLData, s.SiteKMLData2) AS SiteKMLData,
+        lt.TrackingID, 
+        lt.RecordID, 
+        lt.RecordTypeID,
+        lt.BladeID,
+        lt.RecordedDateTime,
+        lt.Latitude,
+        lt.Longitude
+        FROM GC_Gritting_Callout gc 
+        INNER JOIN GC_Site_Gritting_Contract sgc 
+            ON sgc.SiteGrittingContractID = gc.SiteGrittingContractID
+        INNER JOIN EP_Site s 
+            ON s.SiteID = sgc.SiteID 
+        INNER JOIN Location_Tracking lt 
+            ON lt.RecordID = gc.GrittingCallOutID
+        WHERE LEN(COALESCE(s.SiteKMLData, s.SiteKMLData2)) > 0 
+        AND sgc.SiteID = :site
+        AND gc.CallOutDateTime > :date   #THIS IS CRUCIAL. THE QUERY HAS TO BE SET UP USING PLACEHOLDERS TO AVOID INJECTION RISK.
+        """
+    
+        with engine.connect() as connection:
+            df = pd.read_sql(
+                query,
+                connection,
+                params={
+                    "site": site,
+                    "date": date
+                }
+        )
 
     if df.empty:
         return {"error": "No data found"}
@@ -113,5 +122,15 @@ def coverage():
         return jsonify({"error": str(e)}), 500
 
 
+
+
+
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
+
+
+https://your-api/coverage?site=123&date='2024-01-01'
+{
+  "x-api-key": "mysecret123"
+}
+
