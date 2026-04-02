@@ -1,0 +1,26 @@
+import os
+import glob
+
+# Directory to search
+root_dir = "/path/to/your/folder"
+
+# Step 1: Use os.walk to list all files and folders
+all_files = []
+for dirpath, dirnames, filenames in os.walk(root_dir):
+    for file in filenames:
+        all_files.append(os.path.join(dirpath, file))
+
+print("All files found:")
+for f in all_files:
+    print(f)
+
+# Step 2: Use glob to filter only .pdf files
+pdf_files = []
+for file_path in all_files:
+    # glob.glob expects a pattern, so we can pass the single file path
+    if glob.fnmatch.fnmatch(file_path, "*.pdf"):   #fnmatch --> the fn stands for file name!
+        pdf_files.append(file_path)
+
+print("\nPDF files found:")
+for pdf in pdf_files:
+    print(pdf)
