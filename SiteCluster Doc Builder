@@ -1,0 +1,201 @@
+import pandas as pd
+import geopandas as gpd
+from sklearn.cluster import KMeans
+import numpy as np
+from sqlalchemy import create_engine
+from shapely.geometry import Point
+import folium
+from folium.features import GeoJson
+from folium import DivIcon
+import warnings
+import requests, base64
+from docx import Document
+from docx.shared import Pt, Inches
+from datetime import date
+from shapely.geometry import MultiPoint
+warnings.filterwarnings("ignore")
+
+
+server = 'dblistener1' 
+database = 'information_centre' 
+driver = 'SQL Server'
+connection_string = f'mssql+pyodbc://{server}/{database}?driver={driver}'
+engine = create_engine(connection_string)
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth's radius in km
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.atan2(np.sqrt(a), np.sqrt(1-a))
+    return R * c
+
+#For an individual team
+
+
+server = 'dblistener1' 
+database = 'information_centre' 
+driver = 'SQL Server'
+connection_string = f'mssql+pyodbc://{server}/{database}?driver={driver}'
+engine = create_engine(connection_string)
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth's radius in km
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.atan2(np.sqrt(a), np.sqrt(1-a))
+    return R * c
+
+
+def folium_to_base64(html_):  #Using HTMLCSSToImage API
+    response = requests.post(
+        "https://hcti.io/v1/image",
+        auth=("01KTV1RFA1NJS5XRCEZ5VE70G7", "019eb61c-3d41-769a-8dee-c129bd36ec3d"),
+        json={"html": html_, "viewport_width": 800, "viewport_height": 600,"ms_delay": 5000},
+        verify= False
+    )
+    img_url = response.json()["url"]
+    img_bytes = requests.get(img_url, verify= False).content
+
+    return base64.b64encode(img_bytes).decode("utf-8")
+
+def removed_sites_2(id):
+    query=f'''
+        SELECT
+        tc.strName [Team Name],
+        tc.Latitude [Team Latitude],
+        tc.Longitude [Team Longitude],
+        qp.SiteID,
+        qp.SiteLatitude,
+        qp.SiteLongitude,
+        qp.Cost,
+        qp.CM [Contraxt Manager],
+        qp.ClientName
+        FROM tblContractor tc
+        INNER JOIN OM_QueryProfits qp 
+        ON qp.FieldTeamID = tc.intContractorID 
+        WHERE tc.intContractorID= {id}
+        '''
+    with engine.connect() as connection:
+            data = pd.read_sql(query, connection)
+    data=data.dropna(subset= ["SiteLatitude","SiteLongitude"])
+    team_name= data.iloc[0,0]
+    team_lat=data.iloc[0, 1]
+    team_lon= data.iloc[0,2]
+    team_geom = Point(team_lon, team_lat)
+    site_data = data.iloc[:, 3:]
+    site_no = len(site_data)
+    geometry = [Point(x,y) for x,y in zip(data["SiteLongitude"], data["SiteLatitude"])] ##contesting
+    gdf1= gpd.GeoDataFrame(site_data, geometry=geometry, crs= "EPSG:4326")
+    gdf1= gdf1.to_crs("EPSG:27700")
+    X = list(zip(gdf1.geometry.x, gdf1.geometry.y))
+    k= min(10, len(gdf1))
+    kmeans = KMeans(n_clusters=k, random_state=10)
+    gdf1["cluster"] = kmeans.fit_predict(X)
+    x= gdf1.geometry.x
+    y= gdf1.geometry.y
+    centroids = kmeans.cluster_centers_
+    centroid_gdf = gpd.GeoDataFrame(
+    geometry=gpd.points_from_xy(centroids[:, 0], centroids[:, 1]),
+    crs="EPSG:27700"
+    ).to_crs("EPSG:4326")
+    
+    centroid_gdf["distance"] = centroid_gdf.geometry.apply(
+        lambda p: haversine_distance(team_lat, team_lon, p.y, p.x)
+    )
+    furthest_cluster = centroid_gdf["distance"].idxmax()
+    result_df = gdf1[gdf1["cluster"] == furthest_cluster]
+    #return list(result_df["SiteID"]), 100*len(list(result_df["SiteID"]))/site_no
+    gdf1["Furthest Cluster"]= (gdf1["cluster"]== furthest_cluster).astype(int)
+    gdf1["Cost"] = gdf1["Cost"].round(2).apply(lambda x: f"£{x:.2f}")
+    gdf1["Team Coords"]= [team_geom]*len(gdf1)
+    team_x = (gdf1["Team Coords"]).apply(lambda p: p.x)[0]
+    team_y= (gdf1["Team Coords"]).apply(lambda p: p.y)[0]
+    m = folium.Map(location=[team_y + 1.2, team_x - 0.6], zoom_start=14)
+    for _, row in gdf1.iterrows():
+        color = '#f57821' if row["Furthest Cluster"] == 1 else '#294238'
+        folium.CircleMarker(
+            location=[row["SiteLatitude"], row["SiteLongitude"]],
+            radius=8,
+            color=color,
+            fill=True,
+            fill_opacity=1
+        ).add_to(m)
+    folium.CircleMarker(location=[team_y, team_x], radius=8, color='#b2d235', fill=True, fill_opacity=1).add_to(m)
+    legend_html = '''
+    <div style="
+    position: fixed; 
+    bottom: 50px; left: 50px; width: 220px; 
+    background-color: white; 
+    border:2px solid grey; z-index:9999; font-size:14px;
+    padding: 10px;">
+    <b>Legend</b><br>
+    <i style="background:#f57821; width:10px; height:10px; float:left; margin-right:5px;"></i>Closer Clusters<br>
+    <i style="background:#294238; width:10px; height:10px; float:left; margin-right:5px;"></i>Closer Cluster<br>
+    <i style="background:#b2d235; width:10px; height:10px; float:left; margin-right:5px;"></i>Field Team Location
+    </div>
+    '''
+    title_html = '''
+    <div style="
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+
+    background-color: white;
+    border: 2px solid grey;
+    padding: 10px 20px;
+    font-size: 16px;
+    text-align: center;
+    ">
+    <h2 style="margin: 0;">Stanley Landscapes Ltd</h2>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+    m.get_root().html.add_child(folium.Element(title_html))
+    return_frame = gdf1.loc[gdf1["Furthest Cluster"] == 1].drop(columns=["geometry", "cluster", "Furthest Cluster", "Team Coords"])
+    map_html= m.get_root().render()
+    image= folium_to_base64(map_html)
+    map_path = f'{team_name}_SiteMap_{date.today()}.png'
+    with open(map_path, "wb") as f:
+        f.write(base64.b64decode(image))
+    ##Document Creation
+    report_title = "Weekly Report | Suggested Sites to Reallocate"
+    report_date= date.today()
+    summary_text= "This report looks at field team performance over the past 4 weeks, focusing on punctuality, reliability, and hubscape usage. For each KPI, a team is flagged if that same KPI is shown as falling below its SLA for 3 out of those 4 weeks. Flagged teams have had their furthest away sites identified, for potential reallocation."
+    doc= Document()
+    doc.add_heading(report_title, 0)
+    doc.add_heading("Summary", level= 1)
+    doc.add_paragraph(summary_text)
+    doc.add_paragraph("The below map shows highlighted sites in orange, with their surrounding information tabulated below.")
+    doc.add_picture(map_path, width=Inches(6))
+    table= doc.add_table(rows=1, cols= len(return_frame.columns))
+    table.style = 'Table Grid'
+    # Header
+    hdr_cells = table.rows[0].cells
+    for i, col in enumerate(return_frame.columns):
+        hdr_cells[i].text = col
+    # Data rows
+    for _, row in return_frame.iterrows():
+        row_cells = table.add_row().cells
+        for i, value in enumerate(row):
+            row_cells[i].text = str(value)
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(8)
+
+    doc.save(f"{team_name}_ProposedSiteRemoval_{date.today()}.docx")
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("team_id", type=int)
+    args = parser.parse_args()
+    removed_sites_2(args.team_id)
+
